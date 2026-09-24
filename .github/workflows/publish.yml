@@ -24,10 +24,44 @@ jobs:
             echo "Очередь пуста, публиковать нечего"
             exit 0
           fi
+          BASENAME=$(basename "$NEXT_FILE" .txt)
+          MEDIA_DIR="queue/media/$BASENAME"
           TEXT=$(cat "$NEXT_FILE")
-          curl -sf -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
-            -d chat_id="${CHANNEL_ID}" \
-            --data-urlencode text="${TEXT}"
+
+          if [ -d "$MEDIA_DIR" ]; then
+            mapfile -t PHOTOS < <(ls "$MEDIA_DIR" | sort -V)
+            TEXT_LEN=$(printf '%s' "$TEXT" | wc -m)
+
+            CURL_ARGS=(-F chat_id="${CHANNEL_ID}")
+            MEDIA_JSON="[]"
+            for i in "${!PHOTOS[@]}"; do
+              FIELD="photo$i"
+              CURL_ARGS+=(-F "${FIELD}=@${MEDIA_DIR}/${PHOTOS[$i]}")
+              if [ "$i" -eq 0 ] && [ "$TEXT_LEN" -le 1024 ]; then
+                MEDIA_JSON=$(echo "$MEDIA_JSON" | jq --arg media "attach://${FIELD}" --arg caption "$TEXT" '. + [{"type":"photo","media":$media,"caption":$caption}]')
+              else
+                MEDIA_JSON=$(echo "$MEDIA_JSON" | jq --arg media "attach://${FIELD}" '. + [{"type":"photo","media":$media}]')
+              fi
+            done
+
+            curl -sf -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMediaGroup" \
+              "${CURL_ARGS[@]}" -F media="${MEDIA_JSON}"
+
+            # Подпись к альбому в Telegram ограничена 1024 символами.
+            # Если утверждённый текст длиннее, публикуем его отдельным сообщением сразу после альбома.
+            if [ "$TEXT_LEN" -gt 1024 ]; then
+              curl -sf -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+                -d chat_id="${CHANNEL_ID}" \
+                --data-urlencode text="${TEXT}"
+            fi
+
+            git rm -r "$MEDIA_DIR"
+          else
+            curl -sf -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+              -d chat_id="${CHANNEL_ID}" \
+              --data-urlencode text="${TEXT}"
+          fi
+
           git config user.name "publish-bot"
           git config user.email "actions@github.com"
           git rm "$NEXT_FILE"
